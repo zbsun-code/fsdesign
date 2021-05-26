@@ -9,7 +9,7 @@ run: all
 all: $(objects)
 	$(CC) -g -o $(out) $(objects)
 
-ui.o: ui.cpp filesystem.h
+ui.o: ui.cpp ui.h filesystem.h
 	$(CC) -g -c ui.cpp
 
 filesystem.o: filesystem.c filesystem.h

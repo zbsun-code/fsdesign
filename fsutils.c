@@ -1,6 +1,6 @@
 #include "filesystem.h"
 
-//Init inodes and inode stack in the unformatted disk and skip pushing the root dir inode, 0 for success, -1 for failed.
+// Init inodes and inode stack in the unformatted disk and skip pushing the root dir inode, 0 for success, -1 for failed.
 int _initInodes(block *disk, const unsigned int rootino) {
     unsigned int needed_blocknum = INODESTSIZE / INODEPERBLK + (INODESTSIZE % INODEPERBLK != 0); 
     if (disk[0].superblk.n_block - 1 < needed_blocknum) {
@@ -50,7 +50,7 @@ int _popBlkSt(block *disk) {
     return 0;
 }
 
-//0 for success, -1 for failed.
+// 0 for success, -1 for failed.
 int _pushBlkSt(block *disk, const unsigned int bno) {
     unsigned int *sp = &(disk->superblk.sp_freeblock);
     unsigned int *st = disk[0].superblk.s_freeblock;
@@ -69,7 +69,7 @@ int _pushBlkSt(block *disk, const unsigned int bno) {
     return 0;
 }
 
-//0 for success, -1 for failed.
+// 0 for success, -1 for failed.
 int _popInoSt(block *disk) {
     unsigned int *sp = &(disk->superblk.sp_freeinode);
     if (*sp == 0) {
@@ -80,26 +80,45 @@ int _popInoSt(block *disk) {
     return 0;
 }
 
-//0 for success, -1 for failed.
-int _pushInoSt(block *disk, const unsigned int ino) {
+// 0 for success, -1 for failed.
+int _pushInoSt(block *disk, const unsigned int ino_id) {
     unsigned int *sp = &(disk[0].superblk.sp_freeinode);
     if (*sp >= INODESTSIZE) {
         //push failed
         return -1;
     }
     ++(*sp);
-    disk[0].superblk.s_freeinode[*sp-1] = ino;
+    disk[0].superblk.s_freeinode[*sp-1] = ino_id;
     return 0;
 }
 
-//Allocate inode, returns inode no., 0 for fail.
+// Allocate inode(uninitialized), returns inode no., 0 for fail.
 unsigned int ialloc(block *disk) {
     unsigned int ino = inodest_top(disk);
     if (_popInoSt(disk) == -1) return 0;
     return ino;
 }
 
-//Allocate block for inode, returns block no., 0 for fail.
+// Allocate inode(i_ino stays, blocksize = BLKSIZE, mode="rwxrwxrwx", i_count = 1, others initialized to 0), returns inode no., 0 for fail.
+unsigned int icalloc(block *disk) {
+    unsigned int ino = inodest_top(disk);
+    if (_popInoSt(disk) == -1) return 0;
+    inode *newinode = get_inode(disk, ino);
+    newinode->di_blkcount = 0;
+    newinode->di_gid = 0;
+    newinode->di_uid = 0;
+    newinode->i_ctime = 0;
+    newinode->i_mtime = 0;
+    newinode->i_size = 0;
+    newinode->di_blksize = BLKSIZE;
+    for (int i=0; i<9; ++i) {
+        newinode->di_mode[i] = true;
+    }
+    newinode->i_count = 1;
+    return ino;
+}
+
+// Allocate block(uninitialized) for inode, returns block no., 0 for fail.
 unsigned int balloc(block *disk, inode *ino) {
     unsigned int bno = blkst_top(disk);
     if (ino->di_blkcount < NADDR) {
@@ -111,4 +130,64 @@ unsigned int balloc(block *disk, inode *ino) {
         return 0;
     } 
     return bno;
+}
+
+// Free inode, push it into free_inode stack, and free the blocks that related to the inode. -1 for failed. 
+int free_inode(block* disk, inode *ino) {
+    ino->i_flag = INODE_NONE;
+    for (int i=0; i<ino->di_blkcount; ++i) {
+        if (free_block(disk, ino->di_addr[i]) == -1) return -1;
+    }
+    _pushInoSt(disk, ino->i_ino);
+    return 0;
+}
+
+// Free block and push it into free_block stack. -1 for failed. 
+int free_block(block *disk, unsigned int bno) {
+    return _pushBlkSt(disk, bno);
+}
+
+// Free fileitem(not to clear the fileitem), -1 for failed.
+int free_fileitem(fileitem *fileitem) {
+    if (!fileitem) return -1;
+    fileitem->valid = false;
+    return 0;
+}
+
+// Get first available fileitem(initialized) from dirblock. NULL for failed.
+fileitem* get_available_fileitem(block *disk, inode *dirinode) {
+    for (int bnoidx=0; bnoidx<dirinode->di_blkcount; ++bnoidx) {
+        unsigned int bno = dirinode->di_addr[bnoidx];
+        for (int idx=0; idx<DIRFILEMAXCOUNT; ++idx) {
+            if (!disk[bno].dirblk.fileitemTable[idx].valid) {
+                memset(&(disk[bno].dirblk.fileitemTable[idx]), 0, sizeof(fileitem));
+                return &(disk[bno].dirblk.fileitemTable[idx]);
+            }
+        }
+    }
+    //cannot find available fileitem.
+    if (dirinode->di_blkcount < NADDR) {
+        unsigned int newbno = blkst_top(disk);
+        if (_popBlkSt(disk) == -1) return NULL;
+        clearBlock(&disk[newbno]);
+        return &(disk[newbno].dirblk.fileitemTable[0]);
+    }
+    return NULL;
+}
+
+// Clear block. Returns the same as memset(blk, 0, BLKSIZE).
+void* clearBlock(block *blk) {
+    return memset(blk, 0, BLKSIZE);
+}
+
+// Init uninitialized block to new dirblock with fileitem "./" and "../", -1 for failed.
+int init_dirblock(block *dirblock, inode *dirinode, inode *parentinode) {
+    clearBlock(dirblock);
+    dirblock->dirblk.fileitemTable[0].d_inode.di_ino = dirinode->i_ino;
+    strcpy(dirblock->dirblk.fileitemTable[0].filename, ".");
+    dirblock->dirblk.fileitemTable[0].valid = 1;
+    dirblock->dirblk.fileitemTable[1].d_inode.di_ino = parentinode->i_ino;
+    strcpy(dirblock->dirblk.fileitemTable[1].filename, "..");
+    dirblock->dirblk.fileitemTable[1].valid = 1;
+    return 0;
 }
