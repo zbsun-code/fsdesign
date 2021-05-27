@@ -10,18 +10,18 @@
 #define BLKSTSIZE		10			//max count of block super stack
 #define ROOTINODEID		128			//id of root(/)
 #define MINBLKNUM		1024		//min total block num
-#define DIRFILEMAXCOUNT (BLKSIZE/sizeof(fileitem))
+#define DIRFILEMAXCOUNT (BLKSIZE/sizeof(fileitem))	//max count of fileitems in single block
 #define INODESIZE		sizeof(inode)
 #define INODEPERBLK		(BLKSIZE/INODESIZE) //max count of inodes in one block
 #define MAXFILENAMELEN 	128
 #define inodest_top(disk) (disk[0].superblk.sp_freeinode?(disk[0].superblk.s_freeinode[disk[0].superblk.sp_freeinode - 1]):0)	//Return inode stack top, 0 for empty stack.
 #define blkst_top(disk) (disk[0].superblk.s_freeblock[disk[0].superblk.sp_freeblock - 1]) //Return block stack top, 0 for empty stack.
-#define get_inode(disk, ino) (&(disk[ino/INODEPERBLK + (ino % INODEPERBLK != 0)].inodeblk.inodeTable[ino % INODEPERBLK - 1]))
+#define get_inode(disk, ino_id) (&(disk[ino_id/INODEPERBLK + (ino_id % INODEPERBLK != 0)].inodeblk.inodeTable[ino_id % INODEPERBLK - 1]))
 
 typedef bool prior_t[9];
 
 enum inodeflag { 
-	INODE_NONE=0, INODE_FILE, INODE_DIR
+	INODE_NONE=0, INODE_FILE, INODE_DIR, INODE_SYMLINK
 };
 
 typedef struct inode {
@@ -89,18 +89,22 @@ extern int format(const int blocknum, const char *path);
 extern block* mount(const char *path);
 extern int chmod(block *disk, const unsigned int i_ino, bool *mode);
 extern inode* chdir_rel(block *disk, inode *cwd, const char *vpath);
+extern inode* chdir_abs(block *disk, const char *vpath);
 extern inode* chdir_to_root(block *disk);
 extern inode* mkdir(block *disk, inode *cwd, const char *dirname);
+extern int rmdir(block *disk, inode *cwd, const char *dirname);
 extern inode* find_in_dir(block *disk, inode *dir, const char *filename);
 extern fileitem* get_dir_fileitem(block *disk, inode *dir);
+extern fileitem* get_file_fileitem(block *disk, inode *dir, const char *filename);
 extern inode* touch(block *disk, inode *dir, const char *filename);
 
 enum echo_mode {
 	ECHO_W = 0, ECHO_A
 };
 
-extern inode* echo(block *disk, inode* file, const char *content, const enum echo_mode mode);
+extern int echo(block *disk, inode* file, const char *content, const enum echo_mode mode);
 extern int cat(block *disk, inode* file, char *buffer, const unsigned int buffer_size);
+extern int rm(block *disk, inode* dir, const char *filename);
 
 // fsutils.c
 extern int _initInodes(block *disk, const unsigned int rootino);

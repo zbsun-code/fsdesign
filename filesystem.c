@@ -120,6 +120,32 @@ inode* chdir_rel(block *disk, inode *cwd, const char *vpath) {
     return NULL;
 }
 
+// Change current work directory through absolute path.
+inode* chdir_abs(block *disk, const char *vpath) {
+    inode *rootino = get_inode(disk, ROOTINODEID);
+    if (strlen(vpath) == 1 && vpath[0] == '/') return rootino;
+    char buffer[MAXFILENAMELEN] = {'\0'};
+    int cur = 0;
+    int buffcur = 0;
+    if (vpath[cur] == '/') ++cur;
+    for (cur; vpath[cur]!='/' && vpath[cur]!='\0'; ++cur, ++buffcur) {
+        buffer[buffcur] = vpath[cur];
+    }
+    for (int bnoidx=0; bnoidx<rootino->di_blkcount; ++bnoidx) {
+        unsigned int bno = rootino->di_addr[bnoidx];
+        for (int idx=0; idx<DIRFILEMAXCOUNT; ++idx) {
+            inode *ino = get_inode(disk, disk[bno].dirblk.fileitemTable[idx].d_inode.di_ino);
+            if (strcmp(disk[bno].dirblk.fileitemTable[idx].filename, buffer) == 0 
+                && disk[bno].dirblk.fileitemTable[idx].valid == true
+                && ino->i_flag == INODE_DIR) {
+                return chdir_rel(disk, ino, &(vpath[cur]));
+            }
+        }
+    }
+    // cannot find dir or not dir type.
+    return NULL;
+}
+
 // Return root dir inode.
 inode* chdir_to_root(block *disk) {
     return get_inode(disk, ROOTINODEID);
@@ -164,7 +190,7 @@ inode* find_in_dir(block *disk, inode *dir, const char *filename) {
     for (int bnoidx=0; bnoidx<dir->di_blkcount; ++bnoidx) {
         unsigned int bno = dir->di_addr[bnoidx];
         for (int idx=0; idx<DIRFILEMAXCOUNT; ++idx) {
-            if (strcmp(disk[bno].dirblk.fileitemTable[idx].filename, filename) == 0) {
+            if (disk[bno].dirblk.fileitemTable[idx].valid && strcmp(disk[bno].dirblk.fileitemTable[idx].filename, filename) == 0) {
                 return get_inode(disk, disk[bno].dirblk.fileitemTable[idx].d_inode.di_ino);
             }
         }
@@ -179,7 +205,20 @@ fileitem* get_dir_fileitem(block *disk, inode *dir) {
     for (int bnoidx=0; bnoidx<parent->di_blkcount; ++bnoidx) {
         unsigned int bno = parent->di_addr[bnoidx];
         for (int idx=0; idx<DIRFILEMAXCOUNT; ++idx) {
-            if (disk[bno].dirblk.fileitemTable[idx].d_inode.di_ino == dir->i_ino) {
+            if (disk[bno].dirblk.fileitemTable[idx].valid && disk[bno].dirblk.fileitemTable[idx].d_inode.di_ino == dir->i_ino) {
+                return &(disk[bno].dirblk.fileitemTable[idx]);
+            }
+        }
+    }
+    return NULL;
+}
+
+// Get file fileitem from its parent dir; NULL for failed.
+fileitem* get_file_fileitem(block *disk, inode *dir, const char *filename) {
+    for (int bnoidx=0; bnoidx<dir->di_blkcount; ++bnoidx) {
+        unsigned int bno = dir->di_addr[bnoidx];
+        for (int idx=0; idx<DIRFILEMAXCOUNT; ++idx) {
+            if (disk[bno].dirblk.fileitemTable[idx].valid && strcmp(disk[bno].dirblk.fileitemTable[idx].filename, filename) == 0) {
                 return &(disk[bno].dirblk.fileitemTable[idx]);
             }
         }
@@ -221,9 +260,10 @@ inode* touch(block *disk, inode *dir, const char *filename) {
     return NULL;
 }
 
-// Write or append string to file. NULL for failed.
-inode* echo(block *disk, inode* file, const char *content, const enum echo_mode mode) {
-    if (file->i_flag != INODE_FILE) return NULL;
+// Write or append string to file. -1 for failed, -2 for beyond largest size, -3 for no available block.
+int echo(block *disk, inode* file, const char *content, const enum echo_mode mode) {
+    if (file->i_flag != INODE_FILE) return -1;
+    if (strlen(content) == 0) return 0;
     switch (mode)
     {
     case ECHO_W:
@@ -234,29 +274,134 @@ inode* echo(block *disk, inode* file, const char *content, const enum echo_mode 
                     free_block(disk, file->di_addr[i]);
                 }
                 file->di_blkcount = 1;
+                file->i_size = 0;
                 // write bytes
                 strcpy(disk[file->di_addr[0]].normalblk.data, content);
                 int fin = strlen(content);
                 disk[file->di_addr[0]].normalblk.data[fin+1] = EOF;
+                file->i_size = strlen(content)+1;
+            } else if (strlen(content) + 2 > BLKSIZE * NADDR) {
+                // beyond largest filesize
+                return -2;
             } else {
-                //TODO: extend block
+                // extend block
+                unsigned int remainsize = strlen(content) + 2;   //strsize + '\0' + EOF
+                unsigned int blkcur = 0;
+                while (remainsize > BLKSIZE) {
+                    for (int i=0; i<BLKSIZE; ++i) {
+                        disk[file->di_addr[blkcur]].normalblk.data[i] = content[blkcur * BLKSIZE + i];
+                    }
+                    file->i_size += BLKSIZE;
+                    // alloc new block
+                    if (balloc(disk, file) == 0) {
+                        return -3;
+                    }
+                    clearBlock(&disk[file->di_addr[blkcur+1]]); //initialize new block
+                    ++blkcur;
+                    remainsize -= BLKSIZE;
+                }
+                //last block
+                for (int i=0; i<remainsize-1; ++i) {
+                    disk[file->di_addr[blkcur]].normalblk.data[i] = content[blkcur * BLKSIZE + i];
+                    ++(file->i_size);
+                }
+                disk[file->di_addr[blkcur]].normalblk.data[remainsize-1] = EOF;
+                file->i_size += 1;
             }
         }
         break;
     
     case ECHO_A:
-
+        {
+            if ((strlen(content) + file->i_size) <= (BLKSIZE * file->di_blkcount)) {
+                int strcur = 0;
+                if (file->i_size <= 1) {
+                    file->i_size = 0;
+                } else if (file->i_size % BLKSIZE == 1) {
+                    // EOF in last block but '\0' in the former block.
+                    disk[file->di_addr[file->di_blkcount-2]].normalblk.data[BLKSIZE - 1] = content[strcur];
+                    ++strcur;
+                    file->i_size -= 1;
+                } else {
+                    file->i_size -= 2;  //'\0' and EOF
+                }
+                int offset = file->i_size % BLKSIZE;
+                int cur = 0;
+                for (strcur; strcur<(strlen(content)+1); ++cur, ++strcur) {
+                    disk[file->di_addr[file->di_blkcount-1]].normalblk.data[offset + cur] = content[strcur];
+                    ++(file->i_size);
+                }
+                disk[file->di_addr[file->di_blkcount-1]].normalblk.data[offset + cur] = EOF;
+                ++(file->i_size);
+            } else if (strlen(content) + file->i_size > NADDR * BLKSIZE) {
+                // beyond largest filesize
+                return -2;
+            } else {
+                int remainsize = strlen(content) + 2;
+                int strcur = 0;
+                if (file->i_size <= 1) {
+                    file->i_size = 0;
+                } else if (file->i_size % BLKSIZE == 1) {
+                    // EOF in last block but '\0' in the former block.
+                    disk[file->di_addr[file->di_blkcount-2]].normalblk.data[BLKSIZE - 1] = content[strcur];
+                    ++strcur;
+                    --remainsize;
+                    file->i_size -= 1;
+                } else {
+                    file->i_size -= 2;  //'\0' and EOF
+                }
+                // fill the not full block               
+                int offset = file->i_size % BLKSIZE;
+                int blkcur = file->di_blkcount - 1;
+                for (int cur=offset; cur<BLKSIZE; ++cur) {
+                    disk[file->di_addr[blkcur]].normalblk.data[cur] = content[strcur];
+                    ++(file->i_size);
+                    ++strcur;
+                    --remainsize;
+                }
+                // alloc new block
+                if (balloc(disk, file) == 0) {
+                    return -3;
+                }
+                clearBlock(&disk[file->di_addr[blkcur+1]]); //initialize new block
+                ++blkcur;
+                // fill new blocks
+                while (remainsize > BLKSIZE) {
+                    for (int i=0; i<BLKSIZE; ++i, ++strcur) {
+                        disk[file->di_addr[blkcur]].normalblk.data[i] = content[strcur];
+                    }
+                    file->i_size += BLKSIZE;
+                    // alloc new block
+                    if (balloc(disk, file) == 0) {
+                        return -3;
+                    }
+                    clearBlock(&disk[file->di_addr[blkcur+1]]); //initialize new block
+                    ++blkcur;
+                    remainsize -= BLKSIZE;
+                }
+                for (int i=0; i<remainsize-1; ++i, ++strcur) {
+                    disk[file->di_addr[blkcur]].normalblk.data[i] = content[strcur];
+                }
+                disk[file->di_addr[blkcur]].normalblk.data[remainsize-1] = EOF;
+                ++(file->i_size);
+            }
+        }
         break;
     default:
-        return NULL;
+        return -1;
         break;
     }
+    file->i_mtime = time(NULL);
     return 0;
 }
 
 // Read file content to buffer. -1 for failed.
 int cat(block *disk, inode* file, char *buffer, const unsigned int buffer_size) {
-    if (file->i_size > buffer_size) return -1;
+    if (file->i_size > buffer_size || buffer_size == 0) return -1;
+    if (file->i_size < 2) {
+        buffer[0] = '\0';
+        return 0;
+    }
     unsigned int cur = 0;
     if (file->i_size <= BLKSIZE) {
         while (disk[file->di_addr[0]].normalblk.data[cur] != EOF) {
@@ -264,9 +409,73 @@ int cat(block *disk, inode* file, char *buffer, const unsigned int buffer_size) 
             ++cur;
         }
     } else {
-        // TODO: deal with multi-block file.
-
+        // deal with multi-block file.
+        for (int blkidx=0; blkidx<file->di_blkcount; ++blkidx) {
+            for (int cur=0; cur<BLKSIZE; ++cur) {
+                if (disk[file->di_addr[blkidx]].normalblk.data[cur] == EOF) {
+                    return blkidx * BLKSIZE + cur + 1;
+                }
+                buffer[blkidx * BLKSIZE + cur] = disk[file->di_addr[blkidx]].normalblk.data[cur];
+            }
+        }
     }
     return cur+1;
 }
 
+// Delete the empty directory. Returns free bytes, 0 for delete dir but has hard link, -1 for not found, -2 for removing self or parent dir, -3 for not empty.
+int rmdir(block *disk, inode *cwd, const char *dirname) {
+    inode *dirinode = find_in_dir(disk, cwd, dirname);
+    if (dirinode == NULL || dirinode->i_flag != INODE_DIR) return -1;
+    fileitem *dirfileitem = get_dir_fileitem(disk, dirinode);
+    if (strcmp(dirfileitem->filename, ".") == 0 || strcmp(dirfileitem->filename, "..") == 0) {
+        return -2;
+    }
+    //skip "." and ".."
+    for (int cur=2; cur<DIRFILEMAXCOUNT; ++cur) {
+        if (disk[dirinode->di_addr[0]].dirblk.fileitemTable[cur].valid) {
+            return -3;
+        }
+    }
+    for (int blkidx=1; blkidx<dirinode->di_blkcount; ++blkidx) {
+        for (int cur=0; cur<DIRFILEMAXCOUNT; ++cur) {
+            if (disk[dirinode->di_addr[blkidx]].dirblk.fileitemTable[cur].valid) {
+                return -3;
+            }
+        }
+    }
+
+    //start removing
+    if (--(dirinode->i_count) == 0) {
+        int count = 0;
+        for (int blkidx=0; blkidx<dirinode->di_blkcount; ++blkidx) {
+            free_block(disk, dirinode->di_addr[blkidx]);
+            ++count;
+        }
+        dirinode->di_blkcount = 0;
+        free_fileitem(dirfileitem);
+        free_inode(disk, dirinode);
+        return count * BLKSIZE;
+    }
+    return 0;
+}
+
+// Remove file. 0 for delete inode but still has hard link, -1 for not found, 
+int rm(block *disk, inode* dir, const char *filename) {
+    inode *fileinode = find_in_dir(disk, dir, filename);
+    if (!fileinode || fileinode->i_flag != INODE_FILE) return -1;
+    // TODO: check user permission
+    
+    if ((--(fileinode->i_count)) == 0) {
+        fileitem *delfileitem = get_file_fileitem(disk, dir, filename);
+        int count = 0;
+        for (int blkidx=0; blkidx<fileinode->di_blkcount; ++blkidx) {
+            free_block(disk, fileinode->di_addr[blkidx]);
+            ++count;
+        }
+        fileinode->di_blkcount = 0;
+        free_fileitem(delfileitem);
+        free_inode(disk, fileinode);
+        return count * BLKSIZE;
+    }
+    return 0;
+}

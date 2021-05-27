@@ -30,7 +30,12 @@ void wait_for_command() {
         list_dir(disk, cwd);
     } else if (buffer == "cd") {
         cin >> buffer;
-        inode *newcwd = chdir_rel(disk, cwd, buffer.c_str());
+        inode *newcwd = NULL;
+        if (buffer[0] == '/') {
+            newcwd = chdir_abs(disk, buffer.c_str());
+        } else {
+            newcwd = chdir_rel(disk, cwd, buffer.c_str());
+        }
         if (newcwd != NULL) {
             cwd = newcwd;
         } else {
@@ -48,7 +53,8 @@ void wait_for_command() {
         }
     } else if (buffer == "echo") {
         string content = "";
-        cin >> content;
+        getline(cin, content, '\"');
+        getline(cin, content, '\"');
         cin >> buffer;
         if (buffer == ">") {
             cin >> buffer;
@@ -69,20 +75,51 @@ void wait_for_command() {
         }
     } else if (buffer == "cat") {
         cin >> buffer;
-        inode *file = find_in_dir(diskto, cwd, buffer.c_str());
+        inode *file = find_in_dir(disk, cwd, buffer.c_str());
         if (!file || file->i_flag != INODE_FILE) {
             cout << "command: cat: " << buffer << ": Read failed! Unexisting file!" << endl;
         } else {
-            char filebuffer[BLKSIZE];
-            int size = cat(disk, file, filebuffer, BLKSIZE);
+            char filebuffer[NADDR * BLKSIZE];
+            int size = cat(disk, file, filebuffer, NADDR * BLKSIZE);
             if (size == -1) {
                 cout << "command: cat: " << buffer << ": Read failed! Invalid file!" << endl;
             }
+            int count = 0;
             for (int i=0; i<size; ++i) {
                 cout << filebuffer[i];
+                ++count;
             }
             cout << endl;
+            // cout << "total bytes: " << count << endl;
         }
+    } else if (buffer == "rmdir") {
+        cin >> buffer;
+        int size = rmdir(disk, cwd, buffer.c_str());
+        switch (size)
+        {
+        case -1:
+            cout << "command: rmdir: " << buffer << ": No such directory" << endl;
+            break;
+        case -2:
+            cout << "command: rmdir: " << buffer << ": Cannot remove self or parent directory" << endl;
+            break;
+        case -3:
+            cout << "command: rmdir: " << buffer << ": Directory is not empty" << endl;
+            break;
+        default:
+            break;
+        } 
+    } else if (buffer == "rm") {
+        cin >> buffer;
+        int size = rm(disk, cwd, buffer.c_str());
+        switch (size)
+        {
+        case -1:
+            cout << "command: rm: " << buffer << ": No such file" << endl;
+            break;
+        default:
+            break;
+        }      
     } else {
         cout << buffer << ": command not found" << endl;
     }
@@ -116,7 +153,7 @@ int list_dir(block *disk, inode *ino) {
                 mtime[strlen(mtime)-1] = '\0';
                 cout << ino->i_ino << '\t' << ino->di_mode << ' ' 
                     << ino->i_count << ' ' << ino->di_uid << ' ' 
-                    << ino->di_gid << ' ' << ino->i_size << ' ' 
+                    << ino->di_gid << ' ' << ino->i_size << '\t' 
                     << mtime << ' ' << item->filename;
                 if (ino->i_flag == INODE_DIR) cout << '/';
                 cout << endl;
