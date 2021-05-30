@@ -1,6 +1,14 @@
 #include "filesystem.h"
 
+int errno = 0;
+
 int initRootDir(block *disk, const unsigned int root_ino);
+
+int get_errno() {
+    int err = errno;
+    errno = 0;
+    return err;
+}
 
 //Format the virtual disk file, 0 for success, -1 for failed.
 int format(const int blocknum, const char *path) {
@@ -28,6 +36,15 @@ int format(const int blocknum, const char *path) {
     return 0;
 }
 
+// Save vdisk data to file. Return written bytes.
+int savetofile(block *disk, const char *path) {
+    FILE *fp = fopen(path, "wb+");
+    if (!fp) return -1;
+    int size = fwrite(disk, BLKSIZE, disk->superblk.n_block, fp);
+    fclose(fp);
+    return size;
+}
+
 //Init root dir(incliding inode and dirblk) for new formatted virtual disk, -1 for failed.
 int initRootDir(block *disk, const unsigned int root_ino) {
     inode *ino = get_inode(disk, root_ino);
@@ -38,8 +55,7 @@ int initRootDir(block *disk, const unsigned int root_ino) {
     ino->i_ctime = time(NULL);
     ino->i_mtime = ino->i_ctime;
     ino->i_size = 1 * BLKSIZE; // './'
-    bool mode[9] = {1,1,1,1,1,1,1,0,1};
-    chmod(disk, root_ino, mode);
+    chmod(disk, root_ino, "111111101");
     unsigned int bno = balloc(disk, ino);
     if (bno == 0) return -1;
     disk[bno].dirblk.fileitemTable[0].valid = true;
@@ -67,13 +83,30 @@ int initRootDir(block *disk, const unsigned int root_ino) {
     return 0;
 }
 
-//Change the inode permission mode, -1 for failed. 
-int chmod(block *disk, const unsigned int i_ino, bool *mode) {
-    //TODO: need to check user's permission
+//Change the inode permission mode, -1 for no permission, -2 for symlink inode. 
+int chmod(block *disk, const unsigned int i_ino, const char mode[9]) {
     inode *ino = get_inode(disk, i_ino);
-    for (int i=0; i<9; ++i) {
-        ino->di_mode[i] = mode[i]; 
+    // check user's permission
+    if (current_user.uid != ROOT_UID && ino->di_uid != current_user.uid) {
+        return -1;
     }
+    if (ino->i_flag == INODE_SYMLINK) {
+        return -2;
+    }
+    for (int i=0; i<9; ++i) {
+        ino->di_mode[i] = (mode[i] == '1'? true: false); 
+    }
+    return 0;
+}
+
+//Change file or dir's owner. -1 for no permission.
+int chown(block *disk, const unsigned int i_ino, const unsigned short uid) {
+    inode *ino = get_inode(disk, i_ino);
+    // check user's permission
+    if (current_user.uid != ROOT_UID && ino->di_uid != current_user.uid) {
+        return -1;
+    }
+    ino->di_uid = uid;
     return 0;
 }
 
@@ -95,7 +128,7 @@ block* mount(const char *path) {
 }
 
 // Change current work directory through relative path.
-// cwd = Current Work Dir, NULL for failed.
+// cwd = Current Work Dir, NULL for failed, meanwhile, errno=-1 means no permission.
 inode* chdir_rel(block *disk, inode *cwd, const char *vpath) {
     if (vpath[0] == '\0') return cwd;
     char buffer[MAXFILENAMELEN] = {'\0'};
@@ -112,7 +145,12 @@ inode* chdir_rel(block *disk, inode *cwd, const char *vpath) {
             if (strcmp(disk[bno].dirblk.fileitemTable[idx].filename, buffer) == 0 
                 && disk[bno].dirblk.fileitemTable[idx].valid == true
                 && ino->i_flag == INODE_DIR) {
-                return chdir_rel(disk, ino, &(vpath[cur]));
+                if(check_permission(ino, &current_user, ugroupTable, PERM_X))
+                    return chdir_rel(disk, ino, &(vpath[cur]));
+                else {
+                    set_err(-1);     //no permission
+                    return NULL;
+                }
             }
         }
     }
@@ -120,7 +158,7 @@ inode* chdir_rel(block *disk, inode *cwd, const char *vpath) {
     return NULL;
 }
 
-// Change current work directory through absolute path.
+// Change current work directory through absolute path. NULL for failed, -1 for no permission.
 inode* chdir_abs(block *disk, const char *vpath) {
     inode *rootino = get_inode(disk, ROOTINODEID);
     if (strlen(vpath) == 1 && vpath[0] == '/') return rootino;
@@ -138,7 +176,12 @@ inode* chdir_abs(block *disk, const char *vpath) {
             if (strcmp(disk[bno].dirblk.fileitemTable[idx].filename, buffer) == 0 
                 && disk[bno].dirblk.fileitemTable[idx].valid == true
                 && ino->i_flag == INODE_DIR) {
-                return chdir_rel(disk, ino, &(vpath[cur]));
+                if(check_permission(ino, &current_user, ugroupTable, PERM_X))
+                    return chdir_rel(disk, ino, &(vpath[cur]));
+                else {
+                    set_err(-1);
+                    return (inode *)-1;
+                }
             }
         }
     }
@@ -151,8 +194,12 @@ inode* chdir_to_root(block *disk) {
     return get_inode(disk, ROOTINODEID);
 }
 
-// Create new dir in the directory. Returns new dir inode, NULL for failed.
+// Create new dir in the directory. Returns new dir inode, NULL for failed, while errno=1 means no permission.
 inode* mkdir(block *disk, inode *dir, const char *dirname) {
+    if (!check_permission(dir, &current_user, ugroupTable, PERM_W)) {
+        set_err(-1);
+        return NULL;
+    }
     if (!find_in_dir(disk, dir, dirname)) {
         unsigned int newinoid = icalloc(disk);
         if (newinoid == 0) return NULL;
@@ -175,18 +222,21 @@ inode* mkdir(block *disk, inode *dir, const char *dirname) {
         strcpy(newitem->filename, dirname);
         newitem->d_inode.di_ino = newinoid;
         init_dirblock(&disk[newbno], newino, dir);
-        bool newmode[9] = { 1, 1, 1, 1, 0, 1, 1, 0, 0 };
-        chmod(disk, newinoid, newmode);
+        chmod(disk, newinoid, "111111101");
         // TODO: set uid, gid
-
+        newino->di_uid = current_user.uid;
         return newino;
     }
     // find file with same filename.
     return NULL;
 }
 
-// Find file or dir inode in directory, NULL for failed. 
+// Find file or dir inode in directory, NULL for failed, while errno=-1 means no permission. 
 inode* find_in_dir(block *disk, inode *dir, const char *filename) {
+    if (current_user.uid != ROOT_UID && !check_permission(dir, &current_user, ugroupTable, PERM_R)) {
+        set_err(-1);
+        return NULL;
+    }
     for (int bnoidx=0; bnoidx<dir->di_blkcount; ++bnoidx) {
         unsigned int bno = dir->di_addr[bnoidx];
         for (int idx=0; idx<DIRFILEMAXCOUNT; ++idx) {
@@ -226,8 +276,12 @@ fileitem* get_file_fileitem(block *disk, inode *dir, const char *filename) {
     return NULL;
 }
 
-// Create new file in the directory, NULL for failed.
+// Create new file in the directory, NULL for failed, while errno=-1 means no permission.
 inode* touch(block *disk, inode *dir, const char *filename) {
+    if (current_user.uid != ROOT_UID && !check_permission(dir, &current_user, ugroupTable, PERM_W)) {
+        set_err(-1);
+        return NULL;
+    }
     if (!find_in_dir(disk, dir, filename)) {
         unsigned int newinoid = icalloc(disk);
         if (newinoid == 0) return NULL;
@@ -251,7 +305,7 @@ inode* touch(block *disk, inode *dir, const char *filename) {
         newitem->d_inode.di_ino = newinoid;
         clearBlock(&disk[newbno]);
         bool newmode[9] = { 1, 1, 1, 1, 0, 1, 1, 0, 0 };
-        chmod(disk, newinoid, newmode);
+        chmod(disk, newinoid, "111101100");
         // TODO: set uid, gid
 
         return newino;
@@ -260,14 +314,25 @@ inode* touch(block *disk, inode *dir, const char *filename) {
     return NULL;
 }
 
-// Write or append string to file. -1 for failed, -2 for beyond largest size, -3 for no available block.
+// Write or append string to file. -1 for failed, -2 for beyond largest size, -3 for no available block, -4 for no permission.
 int echo(block *disk, inode* file, const char *content, const enum echo_mode mode) {
     if (file->i_flag != INODE_FILE) return -1;
-    if (strlen(content) == 0) return 0;
+    if (current_user.uid != ROOT_UID && !check_permission(file, &current_user, ugroupTable, PERM_W)) {
+        return -4;
+    }
     switch (mode)
     {
     case ECHO_W:
         {
+            if (strlen(content) == 0) {
+                // free other blocks
+                for (int i=1; i<file->di_blkcount; ++i) {
+                    free_block(disk, file->di_addr[i]);
+                }
+                file->di_blkcount = 1;
+                file->i_size = 0;
+                return 0;
+            }
             if (strlen(content)+1 < BLKSIZE) {
                 // free other blocks
                 for (int i=1; i<file->di_blkcount; ++i) {
@@ -279,7 +344,7 @@ int echo(block *disk, inode* file, const char *content, const enum echo_mode mod
                 strcpy(disk[file->di_addr[0]].normalblk.data, content);
                 int fin = strlen(content);
                 disk[file->di_addr[0]].normalblk.data[fin+1] = EOF;
-                file->i_size = strlen(content)+1;
+                file->i_size = strlen(content)+2;
             } else if (strlen(content) + 2 > BLKSIZE * NADDR) {
                 // beyond largest filesize
                 return -2;
@@ -313,6 +378,7 @@ int echo(block *disk, inode* file, const char *content, const enum echo_mode mod
     
     case ECHO_A:
         {
+            if (strlen(content) == 0) return 0;
             if ((strlen(content) + file->i_size) <= (BLKSIZE * file->di_blkcount)) {
                 int strcur = 0;
                 if (file->i_size <= 1) {
@@ -395,8 +461,11 @@ int echo(block *disk, inode* file, const char *content, const enum echo_mode mod
     return 0;
 }
 
-// Read file content to buffer. -1 for failed.
+// Read file content to buffer. -1 for failed, -2 for no permission.
 int cat(block *disk, inode* file, char *buffer, const unsigned int buffer_size) {
+    if (current_user.uid != ROOT_UID && !check_permission(file, &current_user, ugroupTable, PERM_R)) {
+        return -2;
+    }
     if (file->i_size > buffer_size || buffer_size == 0) return -1;
     if (file->i_size < 2) {
         buffer[0] = '\0';
@@ -422,8 +491,11 @@ int cat(block *disk, inode* file, char *buffer, const unsigned int buffer_size) 
     return cur+1;
 }
 
-// Delete the empty directory. Returns free bytes, 0 for delete dir but has hard link, -1 for not found, -2 for removing self or parent dir, -3 for not empty.
+// Delete the empty directory. Returns free bytes, 0 for delete dir but has hard link, -1 for not found, -2 for removing self or parent dir, -3 for not empty, -4 for no permission.
 int rmdir(block *disk, inode *cwd, const char *dirname) {
+    if (current_user.uid != ROOT_UID && !check_permission(cwd, &current_user, ugroupTable, PERM_W)) {
+        return -4;
+    }
     inode *dirinode = find_in_dir(disk, cwd, dirname);
     if (dirinode == NULL || dirinode->i_flag != INODE_DIR) return -1;
     fileitem *dirfileitem = get_dir_fileitem(disk, dirinode);
@@ -459,12 +531,13 @@ int rmdir(block *disk, inode *cwd, const char *dirname) {
     return 0;
 }
 
-// Remove file. 0 for delete inode but still has hard link, -1 for not found, 
+// Remove file. 0 for delete inode but still has hard link, -1 for not found, -2 for no permission.
 int rm(block *disk, inode* dir, const char *filename) {
     inode *fileinode = find_in_dir(disk, dir, filename);
-    if (!fileinode || fileinode->i_flag != INODE_FILE) return -1;
-    // TODO: check user permission
-    
+    if (!fileinode || (fileinode->i_flag != INODE_FILE && fileinode->i_flag != INODE_SYMLINK)) return -1;
+    if (current_user.uid != ROOT_UID && !check_permission(dir, &current_user, ugroupTable, PERM_W)) {
+        return -2;
+    }
     if ((--(fileinode->i_count)) == 0) {
         fileitem *delfileitem = get_file_fileitem(disk, dir, filename);
         int count = 0;
@@ -478,4 +551,54 @@ int rm(block *disk, inode* dir, const char *filename) {
         return count * BLKSIZE;
     }
     return 0;
+}
+
+// Check user's permission. True for pass, False for no permission.
+bool check_permission(inode *file, user_t *user, ugroup_t *uGrpTable, const enum perm_mode mode) {
+    if (user->uid == ROOT_UID) return true;
+    if (user->uid == file->di_uid) {
+        // owner
+        return file->di_mode[mode];
+    } else if (check_user_in_group(user, uGrpTable, file->di_gid)) {
+        // same group
+        return file->di_mode[3 + mode];
+    } else {
+        // others
+        return file->di_mode[6 + mode];
+    }
+}
+
+// Create a symlink to path. NULL for failed, while errno=-1 means no permission.
+inode *create_symlink(block *disk, inode *dir, const char *filename, const char *path) {
+    if (!check_permission(dir, &current_user, ugroupTable, PERM_W)) {
+        set_err(-1);
+        return NULL;
+    }
+    inode *linkinode = touch(disk, dir, filename);
+    if (!linkinode) {
+        return NULL;
+    }
+    echo(disk, linkinode, path, ECHO_W);
+    chmod(disk, linkinode->i_ino, "111111111");
+    linkinode->i_flag = INODE_SYMLINK;
+    return linkinode;
+}
+
+// Modify a symlink to path. NULL for failed, while errno=-1 means no permission.
+inode *modify_symlink(block *disk, inode *symlinkinode, const char *newpath) {
+    if (!check_permission(symlinkinode, &current_user, ugroupTable, PERM_W)) {
+        set_err(-1);
+        return NULL;
+    }
+    symlinkinode->i_flag = INODE_FILE;
+    echo(disk, symlinkinode, newpath, ECHO_W);
+    symlinkinode->i_flag = INODE_SYMLINK;
+    return symlinkinode;
+}
+
+// Create a hardlink to dest. NULL for failed, while errno=-1 means no permission.
+inode *create_hardlink(block *disk, inode *dir, const char *filename, inode *dest) {
+    //TODO: unfinished
+
+    return NULL;
 }

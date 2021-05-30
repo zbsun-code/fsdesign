@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include "user_struct.h"
 #define NADDR     		10			//max count of disk block address (max filesize = BLKSIZE * NADDR)
 #define BLKSIZE			4096		//bytes of disk block
 #define INODESTSIZE 	1008		//max count of inode super stack, also the max count of inodes
@@ -17,6 +18,7 @@
 #define inodest_top(disk) (disk[0].superblk.sp_freeinode?(disk[0].superblk.s_freeinode[disk[0].superblk.sp_freeinode - 1]):0)	//Return inode stack top, 0 for empty stack.
 #define blkst_top(disk) (disk[0].superblk.s_freeblock[disk[0].superblk.sp_freeblock - 1]) //Return block stack top, 0 for empty stack.
 #define get_inode(disk, ino_id) (&(disk[ino_id/INODEPERBLK + (ino_id % INODEPERBLK != 0)].inodeblk.inodeTable[ino_id % INODEPERBLK - 1]))
+#define set_err(errid)	errno=errid
 
 typedef bool prior_t[9];
 
@@ -86,8 +88,10 @@ typedef union block
 } block;
 
 extern int format(const int blocknum, const char *path);
+extern int savetofile(block *disk, const char *path);
 extern block* mount(const char *path);
-extern int chmod(block *disk, const unsigned int i_ino, bool *mode);
+extern int chmod(block *disk, const unsigned int i_ino, const char mode[9]);
+extern int chown(block *disk, const unsigned int i_ino, const unsigned short uid);
 extern inode* chdir_rel(block *disk, inode *cwd, const char *vpath);
 extern inode* chdir_abs(block *disk, const char *vpath);
 extern inode* chdir_to_root(block *disk);
@@ -105,6 +109,9 @@ enum echo_mode {
 extern int echo(block *disk, inode* file, const char *content, const enum echo_mode mode);
 extern int cat(block *disk, inode* file, char *buffer, const unsigned int buffer_size);
 extern int rm(block *disk, inode* dir, const char *filename);
+extern inode *create_symlink(block *disk, inode *dir, const char *filename, const char *path);
+extern inode *modify_symlink(block *disk, inode *symlinkinode, const char *newpath);
+extern inode *create_hardlink(block *disk, inode *dir, const char *filename, inode *dest);
 
 // fsutils.c
 extern int _initInodes(block *disk, const unsigned int rootino);
@@ -122,3 +129,10 @@ extern int free_inode(block* disk, inode *ino);
 extern int free_block(block *disk, unsigned int bno);
 extern int free_fileitem(fileitem *fileitem);
 extern int init_dirblock(block *dirblock, inode *dirinode, inode *parentinode);
+extern int get_errno();
+
+enum perm_mode {
+	PERM_R = 0, PERM_W, PERM_X
+};
+
+extern bool check_permission(inode *file, user_t *user, ugroup_t *uGrpTable, const enum perm_mode mode);

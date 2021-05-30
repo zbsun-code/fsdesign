@@ -1,5 +1,5 @@
 CC = g++
-objects = filesystem.o ui.o fsutils.o
+objects = filesystem.o ui.o fsutils.o user.o
 out = main
 default: all
 
@@ -9,10 +9,13 @@ run: all
 all: $(objects)
 	$(CC) -g -o $(out) $(objects)
 
-ui.o: ui.cpp ui.h filesystem.h
+ui.o: ui.cpp ui.h 
 	$(CC) -g -c ui.cpp
 
-filesystem.o: filesystem.c filesystem.h
+user.o: user.c user.h
+	$(CC) -g -c user.c
+
+filesystem.o: filesystem.c filesystem.h user_struct.h
 	$(CC) -g -c filesystem.c
 
 fsutils.o: fsutils.c filesystem.h
