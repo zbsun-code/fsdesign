@@ -543,7 +543,7 @@ void wait_for_init_command() {
                     cin >> rootpwd;
                     cwd = chdir_to_root(disk);
                     init_rootuser(disk, rootpwd.c_str());
-                    savetofile(disk, "./data.disk");
+                    savetofile(disk, buffer.c_str());
                 }
                 break;
             } else {

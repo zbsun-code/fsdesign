@@ -60,25 +60,12 @@ int initRootDir(block *disk, const unsigned int root_ino) {
     if (bno == 0) return -1;
     disk[bno].dirblk.fileitemTable[0].valid = true;
     dinode *dno = &(disk[bno].dirblk.fileitemTable[0].d_inode);
+    ino->di_uid = 1;
     dno->di_ino = ino->i_ino;
-    // dno->di_blkcount = ino->di_blkcount;
-    // dno->di_gid = ino->di_gid;
-    // dno->di_uid = ino->di_uid;
-    // dno->di_size = ino->i_size;
-    // for (int i=0; i<9; ++i) {
-    //     dno->di_mode[i] = ino->di_mode[i];
-    // }
     strcpy(disk[bno].dirblk.fileitemTable[0].filename, ".");
     disk[bno].dirblk.fileitemTable[1].valid = true;
     dno = &(disk[bno].dirblk.fileitemTable[1].d_inode);
     dno->di_ino = ino->i_ino;
-    // dno->di_blkcount = ino->di_blkcount;
-    // dno->di_gid = ino->di_gid;
-    // dno->di_uid = ino->di_uid;
-    // dno->di_size = ino->i_size;
-    // for (int i=0; i<9; ++i) {
-    //     dno->di_mode[i] = ino->di_mode[i];
-    // }
     strcpy(disk[bno].dirblk.fileitemTable[1].filename, "..");
     return 0;
 }

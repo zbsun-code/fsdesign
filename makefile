@@ -9,10 +9,10 @@ run: all
 all: $(objects)
 	$(CC) -g -o $(out) $(objects)
 
-ui.o: ui.cpp ui.h 
+ui.o: ui.cpp ui.h user.h user_struct.h filesystem.h
 	$(CC) -g -c ui.cpp
 
-user.o: user.c user.h
+user.o: user.c user.h user_struct.h
 	$(CC) -g -c user.c
 
 filesystem.o: filesystem.c filesystem.h user_struct.h
