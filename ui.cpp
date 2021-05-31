@@ -167,6 +167,91 @@ void wait_for_command() {
                 // cout << "total bytes: " << count << endl;
             }
         }
+    } else if (buffer == "mv") {
+        string src, dest;
+        cin >> src >> dest;
+        char path[dest.size()+1];
+        strcpy(path, dest.c_str());
+        char *dstname = strrchr(path, '/');
+        if (!dstname) {
+            cout << "command: mv: " << dest << ": Dest error" << endl;
+            return;
+        }
+        *dstname = '\0';
+        ++dstname;
+        if (!mv(disk, cwd, src.c_str(), path, dstname)) {
+            switch (get_errno())
+            {
+            case -1:
+                cout << "command: mv: " << src << ": Permission denied" << endl;
+                break;
+            case -2:
+                cout << "command: mv: " << src << ": No such file" << endl;
+                break;
+            case -3:
+                cout << "command: mv: " << path << ": Path error" << endl;
+                break;
+            case -4:
+                cout << "command: mv: " << path << ": Dest directory full" << endl;
+                break;
+            case -5:
+                cout << "command: mv: " << dest << ": Dest file name error" << endl;
+                break;
+            case -6:
+                cout << "command: mv: " << dest << ": File already exists" << endl;
+                break;
+            default:
+                cout << "command: mv: " << path << ": Move file failed" << endl;
+                break;
+            }
+        }
+    } else if (buffer == "cp") {
+        string src, dest;
+        cin >> src >> dest;
+        char path[dest.size()+1];
+        strcpy(path, dest.c_str());
+        char *dstname = strrchr(path, '/');
+        inode *ret = NULL;
+        if (!dstname) {
+            dstname = path;
+            ret = cp(disk, cwd, src.c_str(), ".", dstname);
+        } else {
+            *dstname = '\0';
+            ++dstname;
+            ret = cp(disk, cwd, src.c_str(), path, dstname);
+        }
+        if (!ret) {
+            switch (get_errno())
+            {
+            case -1:
+                cout << "command: cp: " << src << ": Permission denied" << endl;
+                break;
+            case -2:
+                cout << "command: cp: " << src << ": No such file" << endl;
+                break;
+            case -3:
+                cout << "command: cp: " << path << ": Path error" << endl;
+                break;
+            case -4:
+                cout << "command: cp: " << path << ": Dest directory full" << endl;
+                break;
+            case -5:
+                cout << "command: cp: " << dest << ": Dest file name error" << endl;
+                break;
+            case -6:
+                cout << "command: cp: " << dest << ": File already exists" << endl;
+                break;
+            case -7:
+                cout << "command: cp: " << dest << ": Disk inode full" << endl;
+                break;
+            case -8:
+                cout << "command: cp: " << dest << ": Read or write error" << endl;
+                break;
+            default:
+                cout << "command: cp: " << src << ": Move file failed" << endl;
+                break;
+            }
+        }
     } else if (buffer == "rmdir") {
         cin >> buffer;
         int size = rmdir(disk, cwd, buffer.c_str());

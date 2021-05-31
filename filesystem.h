@@ -101,6 +101,8 @@ extern inode* find_in_dir(block *disk, inode *dir, const char *filename);
 extern fileitem* get_dir_fileitem(block *disk, inode *dir);
 extern fileitem* get_file_fileitem(block *disk, inode *dir, const char *filename);
 extern inode* touch(block *disk, inode *dir, const char *filename);
+extern fileitem* mv(block *disk, inode *dir, const char *srcname, const char *destpath, const char *destname);
+extern inode* cp(block *disk, inode *dir, const char *srcname, const char *destpath, const char *destname);
 
 enum echo_mode {
 	ECHO_W = 0, ECHO_A

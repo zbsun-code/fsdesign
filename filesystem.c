@@ -254,7 +254,7 @@ inode* mkdir(block *disk, inode *dir, const char *dirname) {
         newitem->d_inode.di_ino = newinoid;
         init_dirblock(&disk[newbno], newino, dir);
         chmod(disk, newinoid, "111111101");
-        // TODO: set uid, gid
+        // TODO: set gid
         newino->di_uid = current_user.uid;
         return newino;
     }
@@ -335,10 +335,9 @@ inode* touch(block *disk, inode *dir, const char *filename) {
         strcpy(newitem->filename, filename);
         newitem->d_inode.di_ino = newinoid;
         clearBlock(&disk[newbno]);
-        bool newmode[9] = { 1, 1, 1, 1, 0, 1, 1, 0, 0 };
-        chmod(disk, newinoid, "111101100");
-        // TODO: set uid, gid
-
+        chmod(disk, newinoid, "111111101");
+        newino->di_uid = current_user.uid;
+        // TODO: set gid
         return newino;
     }
     // find file with same filename.
@@ -819,4 +818,126 @@ inode* get_symlink_dest(block *disk, inode *symlink) {
         return NULL;
     }
     return dest;
+}
+
+// Move file(not dir or symlink) to the dest path. NULL for failed, while errno=-1 means no permission, errno=-2 means no src file, errno=-3 means path error, errno=-4 means dest dir full, -5 means no destname error, -6 means dest file existing.
+fileitem* mv(block *disk, inode *dir, const char *srcname, const char *destpath, const char *destname) {
+    fileitem *mvfile = get_file_fileitem(disk, dir, srcname);
+    if (!mvfile || get_inode(disk, mvfile->d_inode.di_ino)->i_flag != INODE_FILE) {
+        set_err(-2);
+        return NULL;
+    }
+    inode *destdir = NULL;
+    if (destpath[0] == '/') {
+        destdir = chdir_abs(disk, destpath);
+    } else {
+        destdir = chdir_rel(disk, dir, destpath);
+    }
+    if (destdir == NULL) {
+        switch (get_errno())
+        {
+        case -1:
+            set_err(-1);
+            break;
+        default:
+            set_err(-3);
+            break;
+        }
+        return NULL;
+    } 
+    if (!check_permission(dir, &current_user, ugroupTable, PERM_W) || !check_permission(destdir, &current_user, ugroupTable, PERM_W)) {
+        set_err(-1);
+        return NULL;
+    }
+    if (strlen(destname) == 0) {
+        set_err(-5);
+        return NULL;
+    } else if (find_in_dir(disk, destdir, destname)) {
+        set_err(-6);
+        return NULL;
+    }
+    fileitem *newfileitem = get_available_fileitem(disk, destdir);
+    if (!newfileitem) {
+        set_err(-4);
+        return NULL;
+    }
+    newfileitem->d_inode.di_ino = mvfile->d_inode.di_ino;
+    strcpy(newfileitem->filename, destname);
+    newfileitem->valid = 1;
+    free_fileitem(mvfile);
+    return newfileitem;
+}
+
+// Copy file to the dest path. NULL for failed, while errno=-1 means no permission, errno=-2 means no src file, errno=-3 means path error, errno=-4 means dest dir full, -5 means no destname error, -6 means dest file existing, -7 means inode full, -8 means read or write error.
+inode* cp(block *disk, inode *dir, const char *srcname, const char *destpath, const char *destname) {
+    // TODO: untested
+    inode *cpfile = find_in_dir(disk, dir, srcname);
+    if (!cpfile || cpfile->i_flag != INODE_FILE) {
+        set_err(-2);
+        return NULL;
+    }
+    if (!check_permission(cpfile, &current_user, ugroupTable, PERM_R)) {
+        set_err(-1);
+        return NULL;
+    }
+    inode *destdir = NULL;
+    if (destpath[0] == '/') {
+        destdir = chdir_abs(disk, destpath);
+    } else {
+        destdir = chdir_rel(disk, dir, destpath);
+    }
+    if (destdir == NULL) {
+        switch (get_errno())
+        {
+        case -1:
+            set_err(-1);
+            break;
+        default:
+            set_err(-3);
+            break;
+        }
+        return NULL;
+    } 
+    if (!check_permission(destdir, &current_user, ugroupTable, PERM_W)) {
+        set_err(-1);
+        return NULL;
+    }
+    if (strlen(destname) == 0) {
+        set_err(-5);
+        return NULL;
+    } else if (find_in_dir(disk, destdir, destname)) {
+        set_err(-6);
+        return NULL;
+    }
+    int newinoid = icalloc(disk);
+    if (!newinoid) {
+        // alloc inode failed
+        set_err(-7);
+        return NULL;
+    }
+    inode *newino = get_inode(disk, newinoid);
+    char buffer[NADDR * BLKSIZE];
+    // set newinode props
+    newino->di_uid = current_user.uid;
+    newino->i_ctime = newino->i_mtime = time(NULL);
+    newino->i_flag = INODE_FILE;
+    chmod(disk, newinoid, "111111101");
+    if (cat(disk, cpfile, buffer, NADDR * BLKSIZE) == -1 || echo(disk, newino, buffer, ECHO_W) != 0) {
+        //free new inode
+        free_inode(disk, newino);
+        set_err(-8);
+        //write failed
+        return NULL;
+    }
+    // create fileitem in dest dir
+    fileitem *newfileitem = get_available_fileitem(disk, destdir);
+    if (!newfileitem) {
+        free_inode(disk, newino);
+        set_err(-4);
+        return NULL;
+    }
+    newfileitem->d_inode.di_ino = newinoid;
+    strcpy(newfileitem->filename, destname);
+    newfileitem->valid = 1;
+    return newino;
 }
