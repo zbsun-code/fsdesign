@@ -111,7 +111,17 @@ extern int cat(block *disk, inode* file, char *buffer, const unsigned int buffer
 extern int rm(block *disk, inode* dir, const char *filename);
 extern inode *create_symlink(block *disk, inode *dir, const char *filename, const char *path);
 extern inode *modify_symlink(block *disk, inode *symlinkinode, const char *newpath);
-extern inode *create_hardlink(block *disk, inode *dir, const char *filename, inode *dest);
+extern fileitem *create_hardlink(block *disk, inode *dir, const char *filename, inode *dest);
+extern int get_errno();
+
+enum perm_mode {
+	PERM_R = 0, PERM_W, PERM_X
+};
+
+extern bool check_permission(inode *file, user_t *user, ugroup_t *uGrpTable, const enum perm_mode mode);
+extern inode *get_abspath_inode(block *disk, const char *path);
+extern inode* get_relpath_inode(block *disk, inode *cwd, const char *relpath);
+extern inode* get_symlink_dest(block *disk, inode *symlink);
 
 // fsutils.c
 extern int _initInodes(block *disk, const unsigned int rootino);
@@ -129,10 +139,3 @@ extern int free_inode(block* disk, inode *ino);
 extern int free_block(block *disk, unsigned int bno);
 extern int free_fileitem(fileitem *fileitem);
 extern int init_dirblock(block *dirblock, inode *dirinode, inode *parentinode);
-extern int get_errno();
-
-enum perm_mode {
-	PERM_R = 0, PERM_W, PERM_X
-};
-
-extern bool check_permission(inode *file, user_t *user, ugroup_t *uGrpTable, const enum perm_mode mode);

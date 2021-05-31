@@ -17,3 +17,5 @@ extern int create_user(block *disk, user_t *uTable, bool *uBitMap, user_t *newus
 extern int load_uinfo(block *disk, user_t *uTable, bool *uBitMap);
 extern int save_uinfo(block *disk, user_t *uTable);
 extern user_t* login(user_t *uTable, const char *username, const char *pwd);
+extern user_t* get_user(user_t *uTable, unsigned short uid);
+extern user_t* get_user_s(user_t *uTable, const char *username);

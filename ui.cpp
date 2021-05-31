@@ -6,35 +6,8 @@ block *disk = NULL;
 inode *cwd = NULL;
 
 int main() {
-    // // init
-    // if (format(5000, "./data.disk") == 0) {
-    //     cout << "format succeeded!" << endl;
-    // } else {
-    //     cout << "format failed!" << endl;
-    // }
-    // disk = mount("./data.disk");
-    // init_userinfo(disk);
-    // string rootpwd = "";
-    // cout << "Enter new root password: ";
-    // cin >> rootpwd;
-    // cwd = chdir_to_root(disk);
-    // init_rootuser(disk, rootpwd.c_str());
-    // savetofile(disk, "./data.disk");
-    // init finished
-    disk = mount("./data.disk");
-    SUDO(load_uinfo(disk, userTable, userBitMap));
-    user_t *loginuser;
-    string username, password;
-    do {
-        cout << "Enter username: ";
-        cin >> username;
-        cout << "Enter password: ";
-        cin >> password;
-        loginuser = login(userTable, username.c_str(), password.c_str());
-        if (!loginuser) cout << "Login failed! Try again." << endl;
-    } while (loginuser == NULL);
-    current_user = *loginuser;
-    SUDO(cwd = chdir_abs(disk, "/"));
+    wait_for_init_command();
+    login_process(disk);
     while(1) {
         wait_for_command();
     }
@@ -42,8 +15,8 @@ int main() {
 }
 
 void wait_for_command() {
-    cout << current_user.username << "@THIS-PC:";
-    cout << get_dir_absolute_path(disk, cwd);
+    cout << "\033[1m" << "\033[32m" << current_user.username << "@THIS-PC" << "\033[37m" << "\033[0m" << ":";
+    cout << "\033[1m" << "\033[34m" << get_dir_absolute_path(disk, cwd) << "\033[37m" << "\033[0m";
     if (current_user.uid == 1) {
         //root
         cout << "# ";
@@ -66,6 +39,20 @@ void wait_for_command() {
         } else {
             if (chmod(disk, ino->i_ino, modestr.c_str()) == -1) {
                 cout << "command: chmod: " << filename << ": Permission denied" << endl;
+            }
+        }
+    } else if (buffer == "chown") {
+        string uname, path;
+        cin >> uname >> path;
+        user_t *u = get_user_s(userTable, uname.c_str());
+        inode *fileino = (path[0] == '/')? get_abspath_inode(disk, path.c_str()) : get_relpath_inode(disk, cwd, path.c_str());
+        if (!u) {
+            cout << "command: chown: " << uname << ": No such user" << endl;
+        } else if (!fileino) {
+            cout << "command: chown: " << uname << ": No such file" << endl;
+        } else {
+            if (chown(disk, fileino->i_ino, u->uid) == -1) {
+                cout << "command: chown: " << uname << ": Permission denied" << endl;
             }
         }
     } else if (buffer == "cd") {
@@ -112,7 +99,7 @@ void wait_for_command() {
         if (buffer == ">") {
             cin >> buffer;
             inode *file = find_in_dir(disk, cwd, buffer.c_str());
-            if (!file || file->i_flag != INODE_FILE) {
+            if (!file || (file->i_flag != INODE_FILE && file->i_flag != INODE_SYMLINK)) {
                 cout << "command: echo: " << buffer << ": Write failed! Unexisting file!" << endl; 
             } else {
                 ret = echo(disk, file, content.c_str(), ECHO_W);
@@ -120,10 +107,25 @@ void wait_for_command() {
         } else if (buffer == ">>") {
             cin >> buffer;
             inode *file = find_in_dir(disk, cwd, buffer.c_str());
-            if (!file || file->i_flag != INODE_FILE) {
+            if (!file || (file->i_flag != INODE_FILE && file->i_flag != INODE_SYMLINK)) {
                 cout << "command: echo: " << buffer << ": Write failed! Unexisting file!" << endl; 
             } else {
                 ret = echo(disk, file, content.c_str(), ECHO_A);
+            }
+            switch (ret)
+            {
+            case -1:
+                cout << "command: echo: " << buffer << ": Write failed! File not supported" << endl; 
+                break;
+            case -2:
+                cout << "command: echo: " << buffer << ": Write failed! File size overflow" << endl; 
+                break;    
+            case -3:
+                cout << "command: echo: " << buffer << ": Write failed! Disk full" << endl; 
+                break;             
+            case -4:
+                cout << "command: echo: " << buffer << ": Permission denied" << endl; 
+                break;             
             }
         }
         if (ret != 0) {
@@ -146,7 +148,7 @@ void wait_for_command() {
     } else if (buffer == "cat") {
         cin >> buffer;
         inode *file = find_in_dir(disk, cwd, buffer.c_str());
-        if (!file || file->i_flag != INODE_FILE) {
+        if (!file || (file->i_flag != INODE_FILE && file->i_flag != INODE_SYMLINK)) {
             cout << "command: cat: " << buffer << ": Read failed! Unexisting file!" << endl;
         } else {
             char filebuffer[NADDR * BLKSIZE];
@@ -217,6 +219,24 @@ void wait_for_command() {
             string filename, destpath;
             cin >> filename >> destpath;
             link = create_symlink(disk, cwd, filename.c_str(), destpath.c_str());
+            if (!link) {
+                switch (get_errno())
+                {
+                case -1:
+                    cout << "command: ln: " << filename << ": Permission denied" << endl;
+                    break;
+                case -2:
+                    cout << "command: ln: " << filename << ": Already existing file" << endl;
+                    break;
+                case -3:
+                    cout << "command: ln: " << filename << ": Source path is not an absolute path" << endl;
+                    break;
+                default:
+                    cout << "command: ln: " << filename << ": No such file" << endl;
+                    break;
+                }
+                return;
+            }
         } else if (buffer == "-snf") {
             string filename, destpath;
             cin >> filename >> destpath;
@@ -233,12 +253,53 @@ void wait_for_command() {
                 return;
             }
             link = modify_symlink(disk, linkfile, destpath.c_str());
+            if (!link) {
+                switch (get_errno())
+                {
+                case -1:
+                    cout << "command: ln: " << filename << ": Permission denied" << endl;
+                    break;
+                case -2:
+                    cout << "command: ln: " << filename << ": Already existing file" << endl;
+                    break;
+                case -3:
+                    cout << "command: ln: " << filename << ": Source path is not an absolute path" << endl;
+                    break;
+                default:
+                    cout << "command: ln: " << filename << ": No such file" << endl;
+                    break;
+                }
+                return;
+            }
         } else {
             // hard link
             string filename = buffer;
             string dest;
             cin >> dest;
-            // TODO: unfinished
+            inode *destino = NULL;
+            if (dest[0] == '/') {
+                destino = get_abspath_inode(disk, dest.c_str());
+            } else {
+                destino = get_relpath_inode(disk, cwd, dest.c_str());
+            }
+            fileitem *linkfile = create_hardlink(disk, cwd, filename.c_str(), destino);
+            if (!linkfile) {
+                switch (get_errno())
+                {
+                case -1:
+                    cout << "command: ln: " << filename << ": Permission denied" << endl;
+                    break;
+                case -2:
+                    cout << "command: ln: " << filename << ": Create failed! Existing same filename" << endl;
+                    break;
+                case -3:
+                    cout << "command: ln: " << filename << ": Parent directory full" << endl;
+                    break;
+                case -4:
+                    cout << "command: ln: " << filename << ": Source path is not a file" << endl;
+                    break;
+                }
+            }
             return;
         }
 
@@ -263,6 +324,14 @@ void wait_for_command() {
             cout << "Login failed. Try again" << endl;
         }
         if (newuser == NULL) cout << "command: su: " << buffer << ": Login failed. Incorrect password or unexisting user" << endl;
+    } else if (buffer == "export") {
+        cin >> buffer;
+        if (savetofile(disk, buffer.c_str()) == -1) {
+            cout << "command: export: " << buffer << ": Save failed" << endl;
+        }
+    } else if (buffer == "quit") {
+        wait_for_init_command();
+        login_process(disk);
     } else {
         cout << buffer << ": command not found" << endl;
     }
@@ -297,16 +366,26 @@ int list_dir(block *disk, inode *ino) {
                 char mtime[128] = {0};
                 strcpy(mtime, ctime(&(ino->i_mtime)));
                 mtime[strlen(mtime)-1] = '\0';
-                cout << ino->i_ino << '\t' << ino->di_mode << ' ' 
-                    << ino->i_count << ' ' << ino->di_uid << ' ' 
-                    << ino->di_gid << ' ' << ino->i_size << '\t' 
-                    << mtime << ' ' << item->filename;
+                cout << ino->i_ino << '\t' << ino->di_mode << ' ' << setw(3) << left << ino->i_count << ' '; 
+                user_t *owner = get_user(userTable, ino->di_uid);
+                if (!owner) {
+                    cout << setw(8) << left << "none" << ' ';
+                } else {
+                    cout << setw(8) << left << owner->username << ' ';
+                }
+                cout << ino->di_gid << ' ' << ino->i_size << '\t' << mtime << ' ';
                 if (ino->i_flag == INODE_DIR) {
+                    cout << "\033[1m" << "\033[34m" << item->filename << "\033[0m" << "\033[37m";
                     cout << '/';
                 } else if (ino->i_flag == INODE_SYMLINK) {
+                    cout << "\033[1m" << "\033[36m" << item->filename << "\033[0m" << "\033[37m";
                     char buffer[NADDR * BLKSIZE];
+                    ino->i_flag = INODE_FILE;
                     cat(disk, ino, buffer, NADDR * BLKSIZE);
+                    ino->i_flag = INODE_SYMLINK;
                     cout << " -> \'" << buffer << "\'";
+                } else {
+                    cout << item->filename;
                 }
                 cout << endl;
             }
@@ -334,3 +413,58 @@ string get_dir_absolute_path(block *disk, inode *dir) {
     return str;
 }
 
+void login_process(block *disk) {
+    SUDO(load_uinfo(disk, userTable, userBitMap));
+    user_t *loginuser;
+    string username, password;
+    do {
+        cout << "Enter username: ";
+        cin >> username;
+        cout << "Enter password: ";
+        cin >> password;
+        loginuser = login(userTable, username.c_str(), password.c_str());
+        if (!loginuser) cout << "Login failed! Try again." << endl;
+    } while (loginuser == NULL);
+    current_user = *loginuser;
+    SUDO(cwd = chdir_abs(disk, "/"));
+}
+
+void wait_for_init_command() {
+    while (1) {
+        cout << "$ ";
+        string buffer;
+        cin >> buffer;
+        if (buffer == "import") {
+            cin >> buffer;
+            block *newdisk = mount(buffer.c_str());
+            if (newdisk != NULL) {
+                free(disk);
+                disk = newdisk;
+                current_user.valid = 1;
+                current_user.uid = ROOT_UID;
+                inode *uinfodir = chdir_abs(disk, "/etc/userinfo");
+                if (!uinfodir || !find_in_dir(disk, uinfodir, "uinfo")) {
+                    init_userinfo(disk);
+                    string rootpwd = "";
+                    cout << "Enter new root password: ";
+                    cin >> rootpwd;
+                    cwd = chdir_to_root(disk);
+                    init_rootuser(disk, rootpwd.c_str());
+                    savetofile(disk, "./data.disk");
+                }
+                break;
+            } else {
+                cout << "command: import: " << buffer << ": Read failed" << endl;
+            }
+        } else if (buffer == "format") {
+            unsigned int blknum;
+            cin >> blknum;
+            cin >> buffer;
+            if (format(blknum, buffer.c_str()) == -1) {
+                cout << "command: format: " << buffer << ": Write failed" << endl;
+            }
+        } else {
+            cout << buffer << ": command not found" << endl;
+        }
+    }
+}
