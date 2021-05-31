@@ -153,6 +153,7 @@ bool check_user_in_group(user_t *user, ugroup_t *uGrpTable, int gid) {
     return false;
 }
 
+// Get user object from userTable. NULL for failed.
 user_t* get_user(user_t *uTable, unsigned short uid) {
     for (int i=0; i<MAXUSERNUM; ++i) {
         if (uTable[i].valid && uTable[i].uid == uid) {
@@ -162,6 +163,7 @@ user_t* get_user(user_t *uTable, unsigned short uid) {
     return NULL;
 }
 
+// Get user object by string from userTable. NULL for failed.
 user_t* get_user_s(user_t *uTable, const char *username) {
     for (int i=0; i<MAXUSERNUM; ++i) {
         if (uTable[i].valid && strcmp(uTable[i].username, username) == 0) {

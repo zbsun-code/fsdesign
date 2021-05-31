@@ -98,6 +98,7 @@ extern inode* chdir_to_root(block *disk);
 extern inode* mkdir(block *disk, inode *cwd, const char *dirname);
 extern int rmdir(block *disk, inode *cwd, const char *dirname);
 extern inode* find_in_dir(block *disk, inode *dir, const char *filename);
+extern int find_r_in_dir(block *disk, inode *dir, const char *currentpath, const char *filename, char *buffer);
 extern fileitem* get_dir_fileitem(block *disk, inode *dir);
 extern fileitem* get_file_fileitem(block *disk, inode *dir, const char *filename);
 extern inode* touch(block *disk, inode *dir, const char *filename);

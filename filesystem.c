@@ -279,6 +279,42 @@ inode* find_in_dir(block *disk, inode *dir, const char *filename) {
     return NULL;
 }
 
+// Find file or dir recursively in current directory. The file path will be put into buffer. Returns total path count.
+int find_r_in_dir(block *disk, inode *dir, const char *currentpath, const char *filename, char *buffer) {
+    if (!check_permission(dir, &current_user, ugroupTable, PERM_R)) {
+        set_err(-1);
+        return -1;
+    }
+    int count = 0;
+    int cur = 0;
+    for (int bnoidx=0; bnoidx<dir->di_blkcount; ++bnoidx) {
+        unsigned int bno = dir->di_addr[bnoidx];
+        for (int idx=2; idx<DIRFILEMAXCOUNT; ++idx) {   //skip '.' and '..'
+            if (disk[bno].dirblk.fileitemTable[idx].valid) {
+                if (strcmp(disk[bno].dirblk.fileitemTable[idx].filename, filename) == 0) {
+                    cur += sprintf(&buffer[cur], "%s/", currentpath);
+                    cur += sprintf(&buffer[cur], "%s\n", disk[bno].dirblk.fileitemTable[idx].filename);
+                    ++count;
+                }
+                inode *ino = get_inode(disk, disk[bno].dirblk.fileitemTable[idx].d_inode.di_ino);
+                if (ino->i_flag == INODE_DIR) {
+                    if (!check_permission(ino, &current_user, ugroupTable, PERM_R)) {
+                        continue;
+                    }
+                    char newpath[strlen(currentpath) + strlen(disk[bno].dirblk.fileitemTable[idx].filename) + 2];
+                    newpath[0] = 0;
+                    strcat(newpath, currentpath);
+                    strcat(newpath, "/");
+                    strcat(newpath, disk[bno].dirblk.fileitemTable[idx].filename);
+                    count += find_r_in_dir(disk, ino, newpath, filename, buffer + cur);
+                    cur = strlen(buffer);
+                }
+            }
+        }
+    }
+    return count; 
+}
+
 // Get dir fileitem from its parent dir; NULL for root dir or failed.
 fileitem* get_dir_fileitem(block *disk, inode *dir) {
     if (dir->i_ino == ROOTINODEID) return NULL;
@@ -692,6 +728,7 @@ inode *modify_symlink(block *disk, inode *symlinkinode, const char *newabspath) 
 }
 
 // Create a hardlink to dest. NULL for failed, while errno=-1 means no permission, errno=-2 means existing file, errno=-3 means no available fileitem, errno=-4 means destfile is not a file.
+// TODO: need to handle path including symlink
 fileitem *create_hardlink(block *disk, inode *dir, const char *filename, inode *dest) {
     if (!check_permission(dir, &current_user, ugroupTable, PERM_W)) {
         set_err(-1);

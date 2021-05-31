@@ -173,13 +173,16 @@ void wait_for_command() {
         char path[dest.size()+1];
         strcpy(path, dest.c_str());
         char *dstname = strrchr(path, '/');
+        fileitem *ret = NULL;
         if (!dstname) {
-            cout << "command: mv: " << dest << ": Dest error" << endl;
-            return;
+            dstname = path;
+            ret = mv(disk, cwd, src.c_str(), ".", dstname);
+        } else {
+            *dstname = '\0';
+            ++dstname;
+            ret = mv(disk, cwd, src.c_str(), path, dstname);
         }
-        *dstname = '\0';
-        ++dstname;
-        if (!mv(disk, cwd, src.c_str(), path, dstname)) {
+        if (!ret) {
             switch (get_errno())
             {
             case -1:
@@ -252,6 +255,11 @@ void wait_for_command() {
                 break;
             }
         }
+    } else if (buffer == "find") {
+        cin >> buffer;
+        char path[NADDR * BLKSIZE] = {0};
+        int ret = find_r_in_dir(disk, cwd, ".", buffer.c_str(), path);
+        if (ret > 0) cout << path;
     } else if (buffer == "rmdir") {
         cin >> buffer;
         int size = rmdir(disk, cwd, buffer.c_str());
